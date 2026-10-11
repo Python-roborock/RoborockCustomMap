@@ -2,6 +2,74 @@
   "config": {
     "abort": {
       "already_configured": "[%key:common::config_flow::abort::already_configured_service%]"
+    },
+    "step": {
+      "user": {
+        "description": "Do you want to set up Roborock Custom Map?"
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Select map",
+        "data": {
+          "map": "Map"
+        }
+      },
+      "map_menu": {
+        "title": "Custom Floor Plan",
+        "menu_options": {
+          "tune": "Adjust Custom Floor Plan",
+          "upload": "Replace Custom Floor Plan",
+          "remove_confirm": "Remove Custom Floor Plan"
+        }
+      },
+      "upload": {
+        "title": "Upload Custom Floor Plan",
+        "data": {
+          "file": "Choose File"
+        }
+      },
+      "tune": {
+        "title": "Adjust Custom Floor Plan",
+        "description": "Line your Custom Floor Plan up with the Physical Walls.",
+        "data": {
+          "offset_x": "Horizontal Offset",
+          "offset_y": "Vertical Offset",
+          "scale_x": "Horizontal Scale",
+          "scale_y": "Vertical Scale",
+          "map_rotation": "Rotation"
+        },
+        "data_description": {
+          "offset_x": "offset < 0px ⇒ move your Floor Plan ◀; offset > 0px ⇒ move your Floor Plan ▶",
+          "offset_y": "offset < 0px ⇒ move your Floor Plan ▲; offset > 0px ⇒ move your Floor Plan ▼",
+          "scale_x": "Horizontal Multiplier applied to your Custom Floor Plan",
+          "scale_y": "Vertical Multiplier applied to your Custom Floor Plan",
+          "map_rotation": "Rotation applied to the Physical Walls"
+        }
+      },
+      "remove_confirm": {
+        "title": "Remove Custom Floor Plan",
+        "data": {
+          "confirm": "Restore the Floor Plan to the base version"
+        }
+      }
+    },
+    "error": {
+      "invalid_image": "The file is not a supported image (PNG, JPEG or WebP).",
+      "file_too_large": "The file is too large (20 MB maximum).",
+      "image_too_large": "The image dimensions are too large (8192 px maximum).",
+      "upload_failed": "The uploaded file could not be read. Please pick the file again."
+    },
+    "abort": {
+      "not_loaded": "The integration is not loaded. Make sure the Roborock integration is running, then try again.",
+      "no_maps": "No maps were found. Wait for the Roborock integration to finish loading and try again.",
+      "unknown_map": "The selected map no longer exists.",
+      "no_raw_map": "Raw map data is not available yet. Wait for the next map refresh and try again.",
+      "no_entity": "The map image entity was not found. Reload the integration and try again.",
+      "missing_override_file": "The stored floor plan could not be read. Please upload it again.",
+      "write_failed": "The floor plan could not be saved. Check the Home Assistant logs."
     }
   },
   "entity": {

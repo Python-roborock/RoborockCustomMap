@@ -1,6 +1,6 @@
 # Roborock Custom Map
 
-you MUST be on 2025.4b or later
+you MUST be on 2025.12.1 or later
 
 This allows you to use the core Roborock integration with the [Xiaomi Map Card](https://github.com/PiotrMachowski/lovelace-xiaomi-vacuum-map-card)
 
@@ -26,27 +26,25 @@ map_source:
 calibration_source:
   camera: true
 ```
-### Map rotation (new)
 
-If your map is displayed sideways or upside down, you can rotate the map directly in Home Assistant.
+### Custom Floor Plan
 
-This integration provides a **Select entity per map** to control rotation:
-- `select.<...>_rotation`
-- Options: `0°`, `90°`, `180°`, `270°` (labels depend on your HA language)
+You can now override a Stock Floor Plan with your own Custom Floor Plan
+(for example a tidied-up or stylized version).
 
-This rotates **both**:
-- the map image
-- and the calibration points used by the Xiaomi Vacuum Map Card  
-  (so rooms/zones and interactions stay aligned after rotation)
+#### How?
+1. `Settings` → `Devices & Services` → `Roborock Custom Map` → press `Configure`.
+2. Pick a Floor (only if > 1 available).
+3. Choose your Floor Plan (PNG, JPEG or WebP); a Live Preview appears as you do so.
+4. Press `Submit` — the Floor Plan applies immediately as-is, with no adjustments.
+5. On the next view, optionally adjust the horizontal/vertical offset/scale
+   of the Custom Floor Plan, or the relative rotation of the Physical Walls.
+   The Physical Walls are imposed over the Custom Floor Plan for your convenience.
+   The Live Preview refreshes in near-real-time.
+6. Press `Submit` once more — to keep the adjustments,
+   or simply press `X` — to keep the Floor Plan as-is.
 
-**How to use**
-1. Go to **Settings → Devices & services → Roborock Custom Map**
-2. Open the device/entities list
-3. Find the `… rotation` select entity for your map and choose the correct rotation
-
-No reload is required; the map updates immediately.
-
-6. You can hit Edit on the card and then Generate Room Configs to allow for cleaning of rooms. It might generate extra keys, so check the yaml and make sure there are no extra 'predefined_sections'
+Reopen `Configure` **at any time** to Adjust, Replace, or Remove the Custom Floor Plan.
 
 ### Installation
 

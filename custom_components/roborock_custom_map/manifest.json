@@ -3,10 +3,10 @@
   "name": "Roborock Custom Map",
   "codeowners": ["@Lash-L"],
   "config_flow": true,
-  "dependencies": ["roborock"],
+  "dependencies": ["file_upload", "roborock", "websocket_api"],
   "documentation": "https://github.com/Lash-L/RoborockCustomMap",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/Lash-L/RoborockCustomMap/issues",
   "requirements": [],
-  "version": "0.1.6"
+  "version": "0.2.0"
 }

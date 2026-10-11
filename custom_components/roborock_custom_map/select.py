@@ -7,17 +7,21 @@ from homeassistant.components.roborock.entity import RoborockCoordinatedEntityV1
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import (
+    async_dispatcher_connect,
+    async_dispatcher_send,
+)
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import (
-    CONF_MAP_ROTATION,
     DEFAULT_MAP_ROTATION,
-    DOMAIN,
     MAP_ROTATION_OPTIONS,
-    SIGNAL_ROTATION_CHANGED,
+    map_key,
+    set_map_rotation,
+    signal_map_refresh,
+    signal_set_rotation,
 )
 
 PARALLEL_UPDATES = 0
@@ -63,7 +67,7 @@ class RoborockMapRotationSelect(RoborockCoordinatedEntityV1, RestoreEntity, Sele
 
         self.config_entry = config_entry
         self.map_flag = map_flag
-        self.rotation_key = f"{coordinator.duid_slug}_{map_flag}"
+        self.rotation_key = map_key(coordinator.duid_slug, map_flag)
 
         if not map_name:
             map_name = f"Map {map_flag}"
@@ -80,28 +84,47 @@ class RoborockMapRotationSelect(RoborockCoordinatedEntityV1, RestoreEntity, Sele
             if last.state in self._attr_options:
                 self._attr_current_option = last.state
 
-        # Persist selection for the image entity to read
-        self.hass.data[DOMAIN][self.config_entry.entry_id][CONF_MAP_ROTATION][
-            self.rotation_key
-        ] = int(self._attr_current_option)
+        set_map_rotation(
+            self.hass,
+            self.config_entry.entry_id,
+            self.rotation_key,
+            int(self._attr_current_option),
+        )
 
         self.async_write_ha_state()
 
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                signal_set_rotation(self.config_entry.entry_id, self.rotation_key),
+                self._handle_set_rotation,
+            )
+        )
+
     async def async_select_option(self, option: str) -> None:
         """Handle user selecting a rotation option."""
+        self._apply_rotation(option)
+
+    @callback
+    def _handle_set_rotation(self, rotation: int) -> None:
+        """Apply a rotation requested by the options flow's adjust step."""
+        self._apply_rotation(str(rotation))
+
+    @callback
+    def _apply_rotation(self, option: str) -> None:
+        """Set the rotation, persist it, and refresh the map image."""
         if option not in self._attr_options:
             return
 
         self._attr_current_option = option
 
-        self.hass.data[DOMAIN][self.config_entry.entry_id][CONF_MAP_ROTATION][
-            self.rotation_key
-        ] = int(option)
+        set_map_rotation(
+            self.hass, self.config_entry.entry_id, self.rotation_key, int(option)
+        )
 
-        # Notify the image entity to bust the cache via image_last_updated bump
         async_dispatcher_send(
             self.hass,
-            f"{SIGNAL_ROTATION_CHANGED}_{self.config_entry.entry_id}_{self.rotation_key}",
+            signal_map_refresh(self.config_entry.entry_id, self.rotation_key),
         )
 
         self.async_write_ha_state()

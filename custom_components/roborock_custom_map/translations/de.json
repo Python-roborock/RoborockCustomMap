@@ -2,6 +2,74 @@
   "config": {
     "abort": {
       "already_configured": "[%key:common::config_flow::abort::already_configured_service%]"
+    },
+    "step": {
+      "user": {
+        "description": "Möchtest du Roborock Custom Map einrichten?"
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Karte auswählen",
+        "data": {
+          "map": "Karte"
+        }
+      },
+      "map_menu": {
+        "title": "Eigener Grundriss",
+        "menu_options": {
+          "tune": "Eigenen Grundriss anpassen",
+          "upload": "Eigenen Grundriss ersetzen",
+          "remove_confirm": "Eigenen Grundriss entfernen"
+        }
+      },
+      "upload": {
+        "title": "Eigenen Grundriss hochladen",
+        "data": {
+          "file": "Datei auswählen"
+        }
+      },
+      "tune": {
+        "title": "Eigenen Grundriss anpassen",
+        "description": "Richte deinen eigenen Grundriss an den physischen Wänden aus.",
+        "data": {
+          "offset_x": "Horizontaler Versatz",
+          "offset_y": "Vertikaler Versatz",
+          "scale_x": "Horizontale Skalierung",
+          "scale_y": "Vertikale Skalierung",
+          "map_rotation": "Drehung"
+        },
+        "data_description": {
+          "offset_x": "Versatz < 0px ⇒ Grundriss ◀ verschieben; Versatz > 0px ⇒ Grundriss ▶ verschieben",
+          "offset_y": "Versatz < 0px ⇒ Grundriss ▲ verschieben; Versatz > 0px ⇒ Grundriss ▼ verschieben",
+          "scale_x": "Horizontaler Faktor für deinen eigenen Grundriss",
+          "scale_y": "Vertikaler Faktor für deinen eigenen Grundriss",
+          "map_rotation": "Drehung der physischen Wände"
+        }
+      },
+      "remove_confirm": {
+        "title": "Eigenen Grundriss entfernen",
+        "data": {
+          "confirm": "Grundriss auf die Basisversion zurücksetzen"
+        }
+      }
+    },
+    "error": {
+      "invalid_image": "Die Datei ist kein unterstütztes Bild (PNG, JPEG oder WebP).",
+      "file_too_large": "Die Datei ist zu groß (maximal 20 MB).",
+      "image_too_large": "Die Bildabmessungen sind zu groß (maximal 8192 px).",
+      "upload_failed": "Die hochgeladene Datei konnte nicht gelesen werden. Bitte wähle die Datei erneut aus."
+    },
+    "abort": {
+      "not_loaded": "Die Integration ist nicht geladen. Stelle sicher, dass die Roborock-Integration läuft, und versuche es erneut.",
+      "no_maps": "Es wurden keine Karten gefunden. Warte, bis die Roborock-Integration vollständig geladen ist, und versuche es erneut.",
+      "unknown_map": "Die ausgewählte Karte existiert nicht mehr.",
+      "no_raw_map": "Rohe Kartendaten sind noch nicht verfügbar. Warte auf die nächste Kartenaktualisierung und versuche es erneut.",
+      "no_entity": "Die Kartenbild-Entität wurde nicht gefunden. Lade die Integration neu und versuche es erneut.",
+      "missing_override_file": "Der gespeicherte Grundriss konnte nicht gelesen werden. Bitte lade ihn erneut hoch.",
+      "write_failed": "Der Grundriss konnte nicht gespeichert werden. Prüfe die Home-Assistant-Logs."
     }
   },
   "entity": {

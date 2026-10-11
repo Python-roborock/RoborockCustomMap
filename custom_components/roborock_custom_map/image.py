@@ -9,8 +9,14 @@ import logging
 from PIL import Image, UnidentifiedImageError
 from roborock.devices.traits.v1.home import HomeTrait
 from roborock.devices.traits.v1.map_content import MapContent
+from vacuum_map_parser_base.config.drawable import Drawable
 
 from homeassistant.components.image import ImageEntity
+from homeassistant.components.roborock.const import (
+    DEFAULT_DRAWABLES,
+    DRAWABLES,
+    MAP_SCALE,
+)
 from homeassistant.components.roborock.coordinator import RoborockDataUpdateCoordinator
 from homeassistant.components.roborock.entity import RoborockCoordinatedEntityV1
 from homeassistant.config_entries import ConfigEntry
@@ -21,13 +27,22 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import dt as dt_util
 
+from . import map_render
 from .const import (
-    CONF_MAP_ROTATION,
+    CONF_ANCHOR_VX,
+    CONF_ANCHOR_VY,
+    CONF_BG_OVERRIDES,
+    CONF_FILE,
+    CONF_FILE_HASH,
     DEFAULT_MAP_ROTATION,
-    DOMAIN,
     MAP_ROTATION_OPTIONS,
-    SIGNAL_ROTATION_CHANGED,
+    get_map_rotation,
+    map_key,
+    map_unique_id,
+    override_scales,
+    signal_map_refresh,
 )
+from .preview import PreviewSession, async_get_session
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,27 +62,6 @@ def _png_dimensions(data: bytes) -> tuple[int, int] | None:
     return (width, height)
 
 
-def _rotate_point_map_xy(
-    x: float, y: float, w: int, h: int, rotation: int
-) -> tuple[float, float]:
-    """Rotate a point in map pixel space around the image bounds.
-
-    rotation is counter-clockwise (PIL Image.rotate does CCW).
-    Uses continuous coordinates (w - x / h - y) to avoid off-by-one issues.
-    """
-    if rotation == 0:
-        return (x, y)
-    if rotation == 90:
-        # CCW 90: new size (h, w)
-        return (y, w - x)
-    if rotation == 180:
-        return (w - x, h - y)
-    if rotation == 270:
-        # CCW 270 == CW 90: new size (h, w)
-        return (h - y, x)
-    return (x, y)
-
-
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -77,7 +71,7 @@ async def async_setup_entry(
     async_add_entities(
         RoborockMap(
             config_entry,
-            f"{coord.duid_slug}_custom_map_{map_info.name or f'Map {map_info.map_flag}'}",
+            map_unique_id(coord.duid_slug, map_info.map_flag, map_info.name),
             coord,
             coord.properties_api.home,
             map_info.map_flag,
@@ -111,7 +105,7 @@ class RoborockMap(RoborockCoordinatedEntityV1, ImageEntity):
 
         self.config_entry = config_entry
         self.map_flag = map_flag
-        self.rotation_key = f"{coordinator.duid_slug}_{map_flag}"
+        self.rotation_key = map_key(coordinator.duid_slug, map_flag)
         self._home_trait = home_trait
 
         if not map_name:
@@ -120,6 +114,12 @@ class RoborockMap(RoborockCoordinatedEntityV1, ImageEntity):
 
         self.cached_map = b""
         self._raw_image_size: tuple[int, int] | None = None
+        self._overlay_cache: tuple[bytes, Image.Image] | None = None
+        self._mask_cache: tuple[bytes, Image.Image] | None = None
+        self._layers_generation = 0
+        self._bg_cache: tuple[tuple[str, str], bytes] | None = None
+        self._composite_cache: tuple[tuple, bytes] | None = None
+        self._override_render_ok: bool | None = None
 
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
 
@@ -142,25 +142,19 @@ class RoborockMap(RoborockCoordinatedEntityV1, ImageEntity):
 
         self._attr_image_last_updated = self.coordinator.last_home_update
 
-        # Listen for rotation changes from the Select entity
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass,
-                f"{SIGNAL_ROTATION_CHANGED}_{self.config_entry.entry_id}_{self.rotation_key}",
-                self._handle_rotation_changed,
+                signal_map_refresh(self.config_entry.entry_id, self.rotation_key),
+                self._async_handle_refresh,
             )
         )
 
         self.async_write_ha_state()
 
-    def _handle_rotation_changed(self) -> None:
-        """Rotation changed; schedule state update in the event loop."""
-        self.hass.loop.call_soon_threadsafe(self._async_handle_rotation_changed)
-
-
     @callback
-    def _async_handle_rotation_changed(self) -> None:
-        """Rotation changed; bump last_updated to bust the image cache."""
+    def _async_handle_refresh(self) -> None:
+        """Refresh signal; bump last_updated to bust the image cache."""
         self._attr_image_last_updated = dt_util.utcnow()
         self.async_write_ha_state()
 
@@ -185,14 +179,14 @@ class RoborockMap(RoborockCoordinatedEntityV1, ImageEntity):
         img.save(out, format="PNG")
         return out.getvalue()
 
-    def _get_rotation(self) -> int:
-        """Get configured rotation for this map from hass.data (set by select entity)."""
-        rotation = (
-            self.hass.data.get(DOMAIN, {})
-            .get(self.config_entry.entry_id, {})
-            .get(CONF_MAP_ROTATION, {})
-            .get(self.rotation_key, DEFAULT_MAP_ROTATION)
-        )
+    def _get_rotation(self, preview: PreviewSession | None) -> int:
+        """Return the preview session's rotation while active, else the stored one."""
+        if preview is not None:
+            rotation = preview.rotation
+        else:
+            rotation = get_map_rotation(
+                self.hass, self.config_entry.entry_id, self.rotation_key
+            )
 
         if rotation not in MAP_ROTATION_OPTIONS:
             _LOGGER.debug(
@@ -205,27 +199,196 @@ class RoborockMap(RoborockCoordinatedEntityV1, ImageEntity):
 
         return rotation
 
+    def _override_topleft(
+        self,
+        map_content: MapContent,
+        rotation: int,
+        preview: PreviewSession | None,
+    ) -> tuple[float, float] | None:
+        """Rotated-frame top-left of the override, or None when none is served."""
+        map_data = map_content.map_data
+        dims = getattr(map_data, "image", None) and map_data.image.dimensions
+        if dims is None or map_content.raw_api_response is None:
+            return None
+
+        if preview is not None:
+            if preview.bg_bytes is None:
+                return None
+            return (preview.offset_x, preview.offset_y)
+
+        override = self.config_entry.options.get(CONF_BG_OVERRIDES, {}).get(
+            self.rotation_key
+        )
+        if override is None:
+            return None
+        ax = override.get(CONF_ANCHOR_VX)
+        ay = override.get(CONF_ANCHOR_VY)
+        if ax is None or ay is None:
+            return None
+        transform = map_render.MapTransform.from_dimensions(dims)
+        return map_render.anchor_topleft(transform, ax, ay, rotation)
+
+    def _core_drawables(self) -> list[Drawable]:
+        """Drawables the core roborock entry has enabled (mirrors its setup)."""
+        configured = self.coordinator.config_entry.options.get(DRAWABLES, {})
+        return [
+            drawable
+            for drawable, default_value in DEFAULT_DRAWABLES.items()
+            if configured.get(drawable, default_value)
+        ]
+
+    async def _async_get_overlay(self, raw: bytes) -> Image.Image:
+        """Return the parsed drawables overlay, re-parsing when raw changed."""
+        if self._overlay_cache is None or self._overlay_cache[0] != raw:
+            overlay = await self.hass.async_add_executor_job(
+                map_render.build_overlay, raw, self._core_drawables(), MAP_SCALE
+            )
+            self._overlay_cache = (raw, overlay)
+            self._layers_generation += 1
+        return self._overlay_cache[1]
+
+    async def _async_get_mask(self, raw: bytes) -> Image.Image:
+        """Return the wall/dock mask, built lazily (preview inversion only)."""
+        if self._mask_cache is None or self._mask_cache[0] != raw:
+            mask = await self.hass.async_add_executor_job(
+                map_render.build_wall_mask, raw, MAP_SCALE
+            )
+            self._mask_cache = (raw, mask)
+        return self._mask_cache[1]
+
+    async def _async_get_override_bytes(
+        self, filename: str, file_hash: str | None
+    ) -> bytes | None:
+        """Return the stored background image, cached per (filename, hash)."""
+        if (
+            file_hash is not None
+            and self._bg_cache is not None
+            and self._bg_cache[0] == (filename, file_hash)
+        ):
+            return self._bg_cache[1]
+        try:
+            data = await self.hass.async_add_executor_job(
+                map_render.read_override_file, self.hass, filename
+            )
+        except OSError as err:
+            _LOGGER.warning(
+                "Background override file %s is unreadable: %s", filename, err
+            )
+            return None
+        if file_hash is not None:
+            self._bg_cache = ((filename, file_hash), data)
+        return data
+
+    @callback
+    def _set_override_render_ok(self, ok: bool) -> None:
+        """Record whether the last override render succeeded and republish state."""
+        if self._override_render_ok is ok:
+            return
+        self._override_render_ok = ok
+        self.async_write_ha_state()
+
+    async def _async_render_override(
+        self,
+        map_content: MapContent,
+        rotation: int,
+        preview: PreviewSession | None,
+    ) -> bytes | None:
+        """Render the background-override composite, or None for the normal map."""
+        topleft = self._override_topleft(map_content, rotation, preview)
+        if topleft is None:
+            return None
+
+        if (raw := map_content.raw_api_response) is None:
+            _LOGGER.debug(
+                "Raw map data unavailable for %s; serving unmodified map",
+                self.rotation_key,
+            )
+            self._set_override_render_ok(False)
+            return None
+
+        if preview is not None:
+            bg = preview.bg_bytes
+            scale_x = preview.scale_x
+            scale_y = preview.scale_y
+            invert_walls = preview.invert_walls
+            variant: tuple = ("preview", preview.flow_id, preview.revision)
+            filename = file_hash = None
+        else:
+            override = self.config_entry.options.get(CONF_BG_OVERRIDES, {}).get(
+                self.rotation_key, {}
+            )
+            bg = None
+            scale_x, scale_y = override_scales(override)
+            invert_walls = False
+            filename = override.get(CONF_FILE)
+            file_hash = override.get(CONF_FILE_HASH)
+            variant = ("saved", filename, file_hash)
+            if filename is None:
+                self._set_override_render_ok(False)
+                return None
+
+        try:
+            overlay = await self._async_get_overlay(raw)
+            mask = await self._async_get_mask(raw) if invert_walls else None
+
+            params = (topleft[0], topleft[1], scale_x, scale_y, rotation)
+            cache_key = (self._layers_generation, variant, params)
+            if (
+                self._composite_cache is not None
+                and self._composite_cache[0] == cache_key
+            ):
+                self._set_override_render_ok(True)
+                return self._composite_cache[1]
+
+            if bg is None:
+                bg = await self._async_get_override_bytes(filename, file_hash)
+                if bg is None:
+                    self._set_override_render_ok(False)
+                    return None
+
+            composite = await self.hass.async_add_executor_job(
+                map_render.compose_final, overlay, mask, bg, *params
+            )
+            self._composite_cache = (cache_key, composite)
+            self._set_override_render_ok(True)
+            return composite
+        except Exception as err:
+            _LOGGER.warning(
+                "Failed to render background override for %s: %s",
+                self.rotation_key,
+                err,
+            )
+            self._set_override_render_ok(False)
+            return None
+
     async def async_image(self) -> bytes | None:
-        """Get the image (with optional rotation)."""
+        """Get the image (with optional background override and rotation)."""
         if (map_content := self._map_content) is None:
             raise HomeAssistantError("Map flag not found in coordinator maps")
 
-        raw = map_content.image_content
-        rotation = self._get_rotation()
+        preview = async_get_session(
+            self.hass, self.config_entry.entry_id, self.rotation_key
+        )
+        rotation = self._get_rotation(preview)
 
+        composite = await self._async_render_override(map_content, rotation, preview)
+        if composite is not None:
+            return composite
+
+        base = map_content.image_content
         if rotation == DEFAULT_MAP_ROTATION:
-            return raw
+            return base
 
         try:
             return await self.hass.async_add_executor_job(
-                self._rotate_image, raw, rotation
+                self._rotate_image, base, rotation
             )
         except (OSError, UnidentifiedImageError) as err:
             _LOGGER.debug(
                 "Failed to rotate Roborock map image: %s, returning original image",
                 err,
             )
-            return raw
+            return base
 
     @property
     def extra_state_attributes(self):
@@ -237,7 +400,6 @@ class RoborockMap(RoborockCoordinatedEntityV1, ImageEntity):
         if map_data is None:
             return {}
 
-        # Attach room names (same behavior as before)
         if map_data.rooms is not None:
             for room in map_data.rooms.values():
                 name = self._home_trait._rooms_trait.room_map.get(room.number)
@@ -245,33 +407,45 @@ class RoborockMap(RoborockCoordinatedEntityV1, ImageEntity):
 
         calibration = map_data.calibration()
 
-        # Rotate ONLY the "map" (pixel-space) side of calibration points.
-        # Rooms/zones are in vacuum coordinate space and are mapped via calibration.
-        rotation = self._get_rotation()
-        size = self._raw_image_size
-        if rotation != DEFAULT_MAP_ROTATION and size is not None:
-            w, h = size
-            rotated_calibration = []
+        preview = async_get_session(
+            self.hass, self.config_entry.entry_id, self.rotation_key
+        )
+        rotation = self._get_rotation(preview)
+        topleft = self._override_topleft(map_content, rotation, preview)
+        if topleft is not None and self._override_render_ok is not False:
+            transform = map_render.MapTransform.from_dimensions(
+                map_data.image.dimensions
+            )
+            w, h = transform.base_size
+            ox0, oy0 = map_render.canvas_origin(*topleft)
+            shift_x, shift_y = -ox0, -oy0
+        elif rotation != DEFAULT_MAP_ROTATION and self._raw_image_size is not None:
+            w, h = self._raw_image_size
+            shift_x = shift_y = 0
+        else:
+            w = h = None
+
+        if calibration is not None and w is not None:
+            adjusted_calibration = []
             for pt in calibration:
                 mp = pt.get("map") or {}
                 x = mp.get("x")
                 y = mp.get("y")
 
-                # If missing/invalid, keep point as-is
                 if x is None or y is None:
-                    rotated_calibration.append(pt)
+                    adjusted_calibration.append(pt)
                     continue
 
-                nx, ny = _rotate_point_map_xy(float(x), float(y), w, h, rotation)
+                nx, ny = map_render.rotate_point(float(x), float(y), w, h, rotation)
 
                 new_pt = dict(pt)
                 new_map = dict(mp)
-                new_map["x"] = nx
-                new_map["y"] = ny
+                new_map["x"] = nx + shift_x
+                new_map["y"] = ny + shift_y
                 new_pt["map"] = new_map
-                rotated_calibration.append(new_pt)
+                adjusted_calibration.append(new_pt)
 
-            calibration = rotated_calibration
+            calibration = adjusted_calibration
 
         return {
             "calibration_points": calibration,
