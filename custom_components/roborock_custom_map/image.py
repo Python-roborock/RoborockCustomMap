@@ -68,19 +68,47 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Roborock image platform."""
-    async_add_entities(
-        RoborockMap(
-            config_entry,
-            map_unique_id(coord.duid_slug, map_info.map_flag, map_info.name),
-            coord,
-            coord.properties_api.home,
-            map_info.map_flag,
-            map_info.name,
-        )
-        for coord in config_entry.runtime_data
-        if coord.properties_api.home is not None
-        for map_info in (coord.properties_api.home.home_map_info or {}).values()
-    )
+    added: set[tuple[str, int]] = set()
+
+    @callback
+    def _async_add_new_maps() -> None:
+        """Add an entity for every map that has appeared since the last check.
+
+        Home data is not guaranteed to be populated by the time this platform
+        is set up: a device that is busy when Home Assistant starts makes the
+        Roborock coordinator skip `discover_home()`, so `home_map_info` is
+        still empty here and that device silently ends up with no map entity
+        until the config entry is reloaded by hand. Re-checking on every
+        coordinator update picks those maps up as soon as they arrive, and as
+        a bonus also catches maps created in the Roborock app while Home
+        Assistant is running.
+        """
+        entities = []
+        for coord in config_entry.runtime_data:
+            if (home := coord.properties_api.home) is None:
+                continue
+            for map_info in (home.home_map_info or {}).values():
+                key = (coord.duid_slug, map_info.map_flag)
+                if key in added:
+                    continue
+                added.add(key)
+                entities.append(
+                    RoborockMap(
+                        config_entry,
+                        map_unique_id(coord.duid_slug, map_info.map_flag, map_info.name),
+                        coord,
+                        home,
+                        map_info.map_flag,
+                        map_info.name,
+                    )
+                )
+        if entities:
+            async_add_entities(entities)
+
+    _async_add_new_maps()
+
+    for coord in config_entry.runtime_data:
+        config_entry.async_on_unload(coord.async_add_listener(_async_add_new_maps))
 
 
 class RoborockMap(RoborockCoordinatedEntityV1, ImageEntity):

@@ -33,18 +33,41 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up rotation Select entities (one per map)."""
-    async_add_entities(
-        RoborockMapRotationSelect(
-            config_entry=config_entry,
-            unique_id=f"{coord.duid_slug}_map_rotation_{map_info.map_flag}",
-            coordinator=coord,
-            map_flag=map_info.map_flag,
-            map_name=map_info.name,
-        )
-        for coord in config_entry.runtime_data
-        if coord.properties_api.home is not None
-        for map_info in (coord.properties_api.home.home_map_info or {}).values()
-    )
+    added: set[tuple[str, int]] = set()
+
+    @callback
+    def _async_add_new_maps() -> None:
+        """Add a select for every map that has appeared since the last check.
+
+        Mirrors the image platform: home data may still be empty when this
+        runs, in which case the affected device would get no rotation select
+        until the config entry is reloaded by hand. See image.py for details.
+        """
+        entities = []
+        for coord in config_entry.runtime_data:
+            if (home := coord.properties_api.home) is None:
+                continue
+            for map_info in (home.home_map_info or {}).values():
+                key = (coord.duid_slug, map_info.map_flag)
+                if key in added:
+                    continue
+                added.add(key)
+                entities.append(
+                    RoborockMapRotationSelect(
+                        config_entry=config_entry,
+                        unique_id=f"{coord.duid_slug}_map_rotation_{map_info.map_flag}",
+                        coordinator=coord,
+                        map_flag=map_info.map_flag,
+                        map_name=map_info.name,
+                    )
+                )
+        if entities:
+            async_add_entities(entities)
+
+    _async_add_new_maps()
+
+    for coord in config_entry.runtime_data:
+        config_entry.async_on_unload(coord.async_add_listener(_async_add_new_maps))
 
 
 class RoborockMapRotationSelect(RoborockCoordinatedEntityV1, RestoreEntity, SelectEntity):
